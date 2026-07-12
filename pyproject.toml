@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sharklane"
+version = "0.2.0"
+description = "Whale shark ship-collision mitigation simulation (speed reduction, rerouting, lane shift) for bay-mouth and open-water sites, following Womersley et al. 2024."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+authors = [
+    {name = "REPLACE_WITH_YOUR_NAME", email = "REPLACE_WITH_YOUR_EMAIL@example.com"}
+]
+keywords = ["whale shark", "ship strike", "marine conservation", "GIS", "vessel routing", "collision mitigation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: GIS",
+]
+dependencies = [
+    "geopandas",
+    "shapely",
+    "rasterio",
+    "scikit-image",
+    "matplotlib",
+    "pandas",
+    "numpy",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+satellite = ["contextily"]
+
+[project.urls]
+Homepage = "REPLACE_WITH_YOUR_REPO_URL"
+Repository = "REPLACE_WITH_YOUR_REPO_URL"
+
+[tool.setuptools.packages.find]
+include = ["sharklane*"]
+
+[tool.setuptools.package-data]
+sharklane = ["data/*.geojson"]

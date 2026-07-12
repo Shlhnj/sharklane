@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 Shlhnj
+Copyright (c) 2026 REPLACE_WITH_YOUR_NAME
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,3 +19,12 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+NOTE: The bundled dataset at sharklane/data/world_shipping_lanes.geojson is
+separately licensed CC BY 4.0 (excluding Statista) by its original author,
+Paul Benden (newzealandpaul/Shipping-Lanes,
+https://github.com/newzealandpaul/Shipping-Lanes, DOI: 10.5281/zenodo.6361763).
+This MIT license applies to the sharklane package's own code only, not to
+that bundled dataset -- retain its attribution if you redistribute it.
