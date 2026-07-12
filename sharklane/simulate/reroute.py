@@ -66,18 +66,25 @@ def _entry_exit_points(track: gpd.GeoDataFrame, polygon):
 
 
 def reroute_perimeter(tracks: dict[str, gpd.GeoDataFrame], polygon) -> pd.DataFrame:
-    """Simple open-water reroute: shortest path along the polygon boundary
-    between entry/exit points (Womersley et al. 2024's original method)."""
+    """Simple open-water reroute: shortest path around the polygon's
+    CONVEX HULL between entry/exit points (extends Womersley et al. 2024's
+    original method, which walked the raw polygon boundary -- fine for a
+    convex habitat, but for a concave one that forces the path to detour
+    into every notch unnecessarily. The shortest way to route *around* an
+    obstacle only ever needs to touch its convex hull vertices, since any
+    concave notch's mouth is a chord of the hull and cutting straight
+    across it is never longer than tracing in and back out)."""
     from shapely.geometry import LineString
 
-    boundary = polygon.exterior
+    hull = polygon.convex_hull
+    boundary = hull.exterior
     perimeter = boundary.length
     rows = []
     for vid, track in tracks.items():
         entry_pt, exit_pt = _entry_exit_points(track, polygon)
         if entry_pt is None:
             continue
-        # project entry/exit onto boundary, take shorter arc between them
+        # project entry/exit onto the hull boundary, take shorter arc between them
         d_entry = boundary.project(entry_pt)
         d_exit = boundary.project(exit_pt)
 

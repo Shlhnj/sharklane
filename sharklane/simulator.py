@@ -18,7 +18,7 @@ from shapely.geometry import LineString
 from . import io as sio
 from .masking import build_water_mask, WaterMask
 from .raster_vectorize import vectorize_raster, water_mask_from_raster
-from .shipping_lanes import load_world_shipping_lanes, nearest_lane_to_point
+from .shipping_lanes import load_world_shipping_lanes, nearest_lane_to_point, trim_lane_to_polygon
 from .ais import load_ais_csv, clean_tracks, to_tracks
 from .simulate import speed as speed_sim
 from .simulate import reroute as reroute_sim
@@ -26,7 +26,7 @@ from .simulate import laneshift as laneshift_sim
 from .viz import static as static_viz
 from .viz import animate as animate_viz
 from .viz import ship_animate
-from .viz.ship import compute_reroute_options
+from .viz.ship import compute_reroute_options, get_valid_sides, get_default_side
 
 
 class Simulator:
@@ -44,6 +44,7 @@ class Simulator:
         self.water_mask = None
         self.tracks = {}
         self.results = {}
+        self.last_lane_trim_info = None
 
     # ---- 1. Core habitat polygon --------------------------------------
     def load_core_habitat(self, path: str, source_crs: str = None):
@@ -129,7 +130,9 @@ class Simulator:
 
     # ---- World shipping lanes (Major/Middle/Minor) -----------------------
     def load_world_shipping_lane(self, lane_type: str = "Middle",
-                                  pad_deg: float = 1.0, use_nearest: bool = True):
+                                  pad_deg: float = 1.0, use_nearest: bool = True,
+                                  trim_to_polygon: bool = True,
+                                  trim_pad_fraction: float = 0.25):
         """
         Load the bundled global shipping lanes dataset (Major/Middle/Minor,
         CIA-derived, see sharklane.shipping_lanes), clipped to a padded
@@ -142,6 +145,18 @@ class Simulator:
         the full (possibly multi-segment) clipped result and uses its
         union as the corridor line -- only sensible if a single coherent
         segment passes through your AOI.
+
+        By default the found lane is TRIMMED down to a sensible length
+        around the habitat (trim_to_polygon=True): global-dataset lanes
+        can run for hundreds of km, almost all of it irrelevant to this
+        specific site. The trimmed lane keeps the portion of the lane
+        actually inside the habitat polygon, extended by
+        trim_pad_fraction (default 0.25, i.e. 25%) of that inside-length
+        on EACH end -- e.g. a 40 km in-polygon crossing gets a 10 km
+        approach and a 10 km departure appended, for 60 km total, rather
+        than however many hundred km the raw dataset segment happened to
+        be. Set trim_to_polygon=False to keep the full untrimmed lane
+        (the old default behaviour).
         """
         if self.polygon is None:
             raise RuntimeError("Call load_core_habitat() first.")
@@ -162,9 +177,23 @@ class Simulator:
 
         if use_nearest:
             line = nearest_lane_to_point(lanes_proj, centroid.x, centroid.y, lane_type=lane_type)
-            self.corridor_line = line
         else:
-            self.corridor_line = lanes_proj.geometry.union_all()
+            line = lanes_proj.geometry.union_all()
+
+        if trim_to_polygon:
+            try:
+                line, trim_info = trim_lane_to_polygon(line, self.polygon,
+                                                         pad_fraction=trim_pad_fraction)
+                self.last_lane_trim_info = trim_info
+            except ValueError as e:
+                raise ValueError(
+                    f"{e} This can happen if the auto-picked lane doesn't actually "
+                    f"cross the habitat polygon -- try a different lane_type, a "
+                    f"larger pad_deg, or set trim_to_polygon=False to use the full "
+                    f"untrimmed lane instead."
+                )
+
+        self.corridor_line = line
         return self.corridor_line
 
     # ---- 3. Speed reduction ----------------------------------------------
@@ -255,7 +284,34 @@ class Simulator:
             self.results["lane_shift"]["results"], **kwargs
         )
 
-    def list_reroute_options(self, side: str = "west", target_polygon=None,
+    def get_lane_side_options(self):
+        """
+        Check which `side` values are actually valid for the current
+        corridor/lane line, and which one is used by default.
+
+        A lane's orientation determines this -- 'west'/'east' only make
+        sense for a roughly east-west lane; a roughly north-south lane
+        instead has 'south'/'north' ends. Call this before picking `side`
+        explicitly on animate_transit() / animate_transit_comparison() /
+        list_reroute_options(), rather than assuming 'west'/'east' always
+        apply.
+
+        Returns
+        -------
+        dict with 'valid_sides' (list of the two applicable labels),
+        'default_side' (which one is used if you don't specify), and
+        'orientation' ('east_west' or 'north_south').
+        """
+        if self.corridor_line is None:
+            raise RuntimeError("Load or set a transit/corridor line first.")
+        from .viz.ship import _lane_orientation
+        return {
+            "valid_sides": get_valid_sides(self.corridor_line),
+            "default_side": get_default_side(self.corridor_line),
+            "orientation": _lane_orientation(self.corridor_line),
+        }
+
+    def list_reroute_options(self, side: str = None, target_polygon=None,
                               base_speed_knots: float = 12.0):
         """
         Compute and summarize BOTH possible go-around paths (the two arcs
@@ -306,7 +362,7 @@ class Simulator:
             reroute_path_xy=reroute_xy, out_path=out_path, **kwargs
         )
 
-    def animate_transit(self, scenario: str = "baseline", side: str = "west",
+    def animate_transit(self, scenario: str = "baseline", side: str = None,
                          target_polygon=None, base_speed_knots: float = 12.0,
                          reduction: float = 0.5, n_frames: int = 150,
                          out_path: str = "transit.gif", **kwargs):
@@ -335,7 +391,7 @@ class Simulator:
             working_crs=self.working_crs, **kwargs
         )
 
-    def animate_transit_comparison(self, side: str = "west", target_polygon=None,
+    def animate_transit_comparison(self, side: str = None, target_polygon=None,
                                      base_speed_knots: float = 12.0, reduction: float = 0.5,
                                      n_frames: int = 150, out_path: str = "transit_comparison.gif",
                                      scenarios: list = None, **kwargs):

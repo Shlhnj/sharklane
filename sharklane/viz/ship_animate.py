@@ -162,7 +162,7 @@ def _setup_figure(polygon, corridor_line, water_mask, tracks_xy, bounds,
 
 
 def animate_transit(polygon, corridor_line, scenario: str = "baseline",
-                     side: str = "west", water_mask=None,
+                     side: str = None, water_mask=None,
                      base_speed_knots: float = 12.0, reduction: float = 0.5,
                      n_frames: int = 150, out_path: str = "transit.gif",
                      fps: int = 15,
@@ -180,7 +180,12 @@ def animate_transit(polygon, corridor_line, scenario: str = "baseline",
     through (or around) the risk polygon, under one scenario.
 
     scenario : 'baseline', 'speed_reduction', or 'reroute'
-    side : 'west' or 'east'
+    side : which end of the corridor line to start from -- 'west'/'east'
+        for a roughly east-west lane, 'south'/'north' for a roughly
+        north-south lane. If None, defaults to whichever the lane's own
+        orientation suggests (see sharklane.viz.ship.get_default_side()).
+        Use sharklane.viz.ship.get_valid_sides(corridor_line) to check
+        which two labels actually apply before picking one explicitly.
     ship_scale : ship length as a fraction of the polygon's bounding-box
         diagonal -- ignored if ship_length is given directly (in metres).
     ship_color : a single color, or a dict {scenario: color}.
@@ -254,7 +259,7 @@ def animate_transit(polygon, corridor_line, scenario: str = "baseline",
     return out_path
 
 
-def animate_transit_comparison(polygon, corridor_line, side: str = "west",
+def animate_transit_comparison(polygon, corridor_line, side: str = None,
                                 water_mask=None, base_speed_knots: float = 12.0,
                                 reduction: float = 0.5, n_frames: int = 150,
                                 out_path: str = "transit_comparison.gif",

@@ -88,3 +88,83 @@ def nearest_lane_to_point(gdf: gpd.GeoDataFrame, x: float, y: float,
     segs["_dist"] = segs.geometry.distance(pt)
     nearest = segs.sort_values("_dist").iloc[0]
     return nearest.geometry
+
+
+def trim_lane_to_polygon(lane_line, polygon, pad_fraction: float = 0.25):
+    """
+    Trim a (possibly very long) lane down to just the portion relevant to
+    a given polygon: the segment that actually lies inside the polygon,
+    extended by `pad_fraction` of that inside-length on EACH end.
+
+    This matters because a lane pulled from the global shipping-lanes
+    dataset (or any real-world lane source) can run for hundreds of km --
+    using it untrimmed as a corridor line means simulate_redirection() /
+    the ship animations end up modeling a mostly-irrelevant, enormously
+    long approach/departure that has nothing to do with the actual habitat.
+
+    Parameters
+    ----------
+    lane_line : shapely LineString, in the same (projected/metric) CRS as
+        `polygon` -- reproject both into a metric CRS before calling this,
+        since pad_fraction is computed from real length.
+    polygon : shapely Polygon (or MultiPolygon) -- the risk/habitat area
+        to trim the lane around.
+    pad_fraction : fraction of the in-polygon lane length to extend on
+        EACH end beyond the polygon boundary. E.g. 0.25 (default) means:
+        if the lane crosses 40 km of the polygon, the trimmed lane extends
+        an extra 10 km (25% of 40 km) past the polygon on both the entry
+        and exit side, for a total trimmed length of 40 + 10 + 10 = 60 km.
+        Use 0 for no extension at all (lane exactly matches the in-polygon
+        segment, with no visible approach/departure outside it).
+
+    Returns
+    -------
+    trimmed_line : shapely LineString
+    info : dict with 'inside_length_m', 'pad_length_m', 'total_length_m'
+    """
+    from shapely.geometry import LineString
+
+    inter = lane_line.intersection(polygon)
+    if inter.is_empty:
+        raise ValueError(
+            "The lane does not intersect the polygon at all -- nothing to "
+            "trim around. Check that the lane actually passes through the "
+            "habitat, or use the full untrimmed lane instead "
+            "(trim_to_polygon=False)."
+        )
+
+    if inter.geom_type == "MultiLineString":
+        # multiple crossings -- use the longest piece as the representative
+        # "inside" segment (the others are likely minor clips near the edge)
+        inter = max(inter.geoms, key=lambda g: g.length)
+    elif inter.geom_type == "Point":
+        raise ValueError(
+            "The lane only touches the polygon at a single point (tangent), "
+            "not a real crossing -- cannot compute a meaningful inside "
+            "length to trim around."
+        )
+    elif inter.geom_type != "LineString":
+        raise ValueError(f"Unexpected lane/polygon intersection type: {inter.geom_type}")
+
+    inside_length = inter.length
+    pad_length = pad_fraction * inside_length
+
+    x0, y0 = inter.coords[0]
+    x1, y1 = inter.coords[-1]
+    dx, dy = x1 - x0, y1 - y0
+    seg_len = (dx ** 2 + dy ** 2) ** 0.5
+    if seg_len == 0:
+        raise ValueError("Degenerate lane/polygon intersection (zero length) -- "
+                          "cannot determine a direction to extend along.")
+    ux, uy = dx / seg_len, dy / seg_len
+
+    new_x0, new_y0 = x0 - ux * pad_length, y0 - uy * pad_length
+    new_x1, new_y1 = x1 + ux * pad_length, y1 + uy * pad_length
+
+    trimmed = LineString([(new_x0, new_y0), (new_x1, new_y1)])
+    info = {
+        "inside_length_m": inside_length,
+        "pad_length_m": pad_length,
+        "total_length_m": trimmed.length,
+    }
+    return trimmed, info

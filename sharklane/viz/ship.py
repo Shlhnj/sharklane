@@ -32,17 +32,82 @@ def ship_polygon(x: float, y: float, heading_rad: float,
     return pts @ R.T + np.array([x, y])
 
 
-def _lane_endpoints(corridor_line: LineString, side: str):
+def _lane_orientation(corridor_line: LineString) -> str:
+    """Return 'east_west' or 'north_south' depending on which axis the
+    corridor line predominantly runs along."""
     x0, y0 = corridor_line.coords[0]
     x1, y1 = corridor_line.coords[-1]
-    if side == "east":
-        x0, y0, x1, y1 = x1, y1, x0, y0
-    elif side != "west":
-        raise ValueError("side must be 'west' or 'east'")
-    return x0, y0, x1, y1
+    dx, dy = abs(x1 - x0), abs(y1 - y0)
+    return "east_west" if dx >= dy else "north_south"
 
 
-def build_baseline_track(corridor_line: LineString, side: str = "west",
+def get_valid_sides(corridor_line: LineString) -> list[str]:
+    """Return the two valid `side` values for THIS lane's actual
+    orientation: ('west', 'east') for a roughly east-west lane, or
+    ('south', 'north') for a roughly north-south lane. A north-south lane
+    has no 'west' or 'east' end to speak of -- check this (or just call
+    get_default_side()) instead of assuming west/east always apply."""
+    orientation = _lane_orientation(corridor_line)
+    return ["west", "east"] if orientation == "east_west" else ["south", "north"]
+
+
+def get_default_side(corridor_line: LineString) -> str:
+    """The side used when none is specified explicitly -- the first
+    option from get_valid_sides() for this lane's orientation ('west' for
+    an east-west lane, 'south' for a north-south lane)."""
+    return get_valid_sides(corridor_line)[0]
+
+
+def _lane_endpoints(corridor_line: LineString, side: str = None):
+    """
+    Resolve which physical end of the corridor line a transit starts
+    from, based on `side` and the line's ACTUAL orientation -- not just
+    which raw coordinate happens to be first in the LineString. (An
+    earlier version of this function assumed coords[0] was always the
+    'west' end, which is silently wrong for a line drawn right-to-left,
+    and had no concept of north-south lanes at all.)
+
+    side : 'west'/'east' for a roughly east-west lane, 'south'/'north' for
+        a roughly north-south lane. If None, defaults to
+        get_default_side(corridor_line). Use get_valid_sides() to check
+        which two labels apply to a given lane before picking one.
+    """
+    x0, y0 = corridor_line.coords[0]
+    x1, y1 = corridor_line.coords[-1]
+    dx, dy = x1 - x0, y1 - y0
+
+    if side is None:
+        side = get_default_side(corridor_line)
+
+    if abs(dx) >= abs(dy):
+        # east-west lane: label endpoints by actual x, not raw coord order
+        west_pt, east_pt = ((x0, y0), (x1, y1)) if x0 <= x1 else ((x1, y1), (x0, y0))
+        if side == "west":
+            return (*west_pt, *east_pt)
+        elif side == "east":
+            return (*east_pt, *west_pt)
+        else:
+            raise ValueError(
+                f"This corridor line runs roughly east-west; side must be "
+                f"'west' or 'east', got {side!r}. Call "
+                f"sharklane.viz.ship.get_valid_sides(corridor_line) to check."
+            )
+    else:
+        # north-south lane: label endpoints by actual y
+        south_pt, north_pt = ((x0, y0), (x1, y1)) if y0 <= y1 else ((x1, y1), (x0, y0))
+        if side == "south":
+            return (*south_pt, *north_pt)
+        elif side == "north":
+            return (*north_pt, *south_pt)
+        else:
+            raise ValueError(
+                f"This corridor line runs roughly north-south; side must "
+                f"be 'north' or 'south', got {side!r}. Call "
+                f"sharklane.viz.ship.get_valid_sides(corridor_line) to check."
+            )
+
+
+def build_baseline_track(corridor_line: LineString, side: str = None,
                           n_frames: int = 150):
     """Straight, constant-speed transit from one lane endpoint to the other."""
     x0, y0, x1, y1 = _lane_endpoints(corridor_line, side)
@@ -52,7 +117,7 @@ def build_baseline_track(corridor_line: LineString, side: str = "west",
 
 
 def build_speed_reduction_track(corridor_line: LineString, polygon,
-                                 side: str = "west",
+                                 side: str = None,
                                  base_speed_knots: float = 12.0,
                                  reduction: float = 0.5,
                                  n_spatial: int = 400,
@@ -84,48 +149,63 @@ def build_speed_reduction_track(corridor_line: LineString, polygon,
     return fx, fy, total_time
 
 
-def compute_reroute_options(corridor_line: LineString, polygon, side: str = "west",
+def compute_reroute_options(corridor_line: LineString, polygon, side: str = None,
                              n_arc_samples: int = 300):
     """
-    Compute BOTH possible go-around paths (the two arcs along the polygon
-    boundary connecting the entry and exit points), not just the shorter
-    one. Useful when the polygon splits the approach into two similar-
-    length routes -- you can inspect both and pick.
+    Compute BOTH possible go-around paths (the two arcs connecting the
+    entry and exit points), not just the shorter one. Useful when the
+    polygon splits the approach into two similar-length routes -- you can
+    inspect both and pick.
+
+    IMPORTANT: routes are built around the polygon's CONVEX HULL, not its
+    raw boundary. For routing *around* an obstacle (staying outside it),
+    the shortest path only ever needs to touch convex hull vertices --
+    tracing into a concave notch and back out is never shorter than
+    cutting straight across it, since the notch's mouth is, by
+    construction, a chord of the hull. Walking the raw (possibly concave)
+    boundary instead -- which earlier versions of this function did --
+    forces the path to detour into every notch unnecessarily, producing
+    visibly bad, needlessly long routes for any non-convex habitat shape.
+    The hull is always a superset of the polygon, so a path that stays
+    outside the hull also always stays outside the original polygon.
 
     Returns
     -------
-    options : dict with keys 'option_1' (the entry->exit boundary arc in
-        the "forward" direction) and 'option_2' (the "backward" direction).
+    options : dict with keys 'option_1' (the entry->exit hull arc in the
+        "forward" direction) and 'option_2' (the "backward" direction).
         Each value is a dict with:
-          'arc_line'   : shapely LineString of the boundary arc alone
+          'arc_line'   : shapely LineString of the hull-boundary arc alone
           'length_m'   : arc length (m)
           'side'       : a rough compass label ('north'/'south' if the
                          lane runs mostly east-west, 'east'/'west' if it
                          runs mostly north-south) for which side of the
                          straight entry-exit line this arc bulges toward
-          'boundary_entry', 'boundary_exit' : shapely Points
+          'boundary_entry', 'boundary_exit' : shapely Points (on the hull)
     similar_length : bool, True if the two options differ in length by
         less than 15% -- a signal that it's genuinely worth offering the
         choice rather than just defaulting to the shorter one.
     """
+    hull = polygon.convex_hull
+    boundary = hull.exterior
+
     x0, y0, x1, y1 = _lane_endpoints(corridor_line, side)
     full_line = LineString([(x0, y0), (x1, y1)])
-    inter = full_line.intersection(polygon.exterior)
+    inter = full_line.intersection(boundary)
 
     pts = list(inter.geoms) if hasattr(inter, "geoms") else [inter]
     pts = [p for p in pts if p.geom_type == "Point"]
     if len(pts) < 2:
         raise ValueError(
-            "The lane/corridor line does not cross the polygon boundary "
-            "twice from this side -- cannot compute reroute options. Check "
-            "that the corridor line actually passes through the polygon."
+            "The lane/corridor line does not cross the polygon's convex "
+            "hull boundary twice from this side -- cannot compute reroute "
+            "options. Check that the corridor line actually passes through "
+            "the polygon."
         )
 
     start_pt = Point(x0, y0)
     pts_sorted = sorted(pts, key=lambda p: start_pt.distance(p))
     boundary_entry, boundary_exit = pts_sorted[0], pts_sorted[-1]
 
-    boundary = polygon.exterior
     perim = boundary.length
     d_entry = boundary.project(boundary_entry)
     d_exit = boundary.project(boundary_exit)
@@ -136,13 +216,12 @@ def compute_reroute_options(corridor_line: LineString, polygon, side: str = "wes
         n = max(int(n_arc_samples * arc_len / perim), 50)
         uniform_traveled = np.linspace(0, arc_len, n)
 
-        # Force the polygon's actual boundary vertices into the sample set.
-        # Uniform arc-length sampling alone can straddle a sharp corner
-        # without ever landing exactly on it, leaving the straight chord
-        # between two samples to cut inside the polygon near that corner.
-        # Including every real vertex guarantees the path always touches
-        # each corner exactly, eliminating that cut regardless of how
-        # coarse the uniform sampling is.
+        # Force the hull's actual vertices into the sample set (uniform
+        # arc-length sampling alone can straddle a corner without landing
+        # exactly on it). Since the hull is convex, this now gives the
+        # true taut/shortest path -- walking a convex boundary between two
+        # points already IS the shortest way around, unlike for the
+        # original concave polygon.
         vertex_coords = list(boundary.coords)[:-1]  # drop duplicate closing point
         vertex_offsets = np.array([boundary.project(Point(c)) for c in vertex_coords])
         if direction_sign > 0:
@@ -181,7 +260,7 @@ def compute_reroute_options(corridor_line: LineString, polygon, side: str = "wes
     return options, similar_length
 
 
-def build_reroute_track(corridor_line: LineString, polygon, side: str = "west",
+def build_reroute_track(corridor_line: LineString, polygon, side: str = None,
                          n_frames: int = 150, direction: str = "auto"):
     """
     Straight approach -> arc around the polygon boundary -> straight
@@ -237,7 +316,7 @@ def build_reroute_track(corridor_line: LineString, polygon, side: str = "west",
     return xs, ys
 
 
-def build_baseline_track_raw(corridor_line: LineString, side: str = "west",
+def build_baseline_track_raw(corridor_line: LineString, side: str = None,
                               base_speed_knots: float = 12.0, n_spatial: int = 500):
     """Straight track at constant speed, with real cumulative time (s)."""
     x0, y0, x1, y1 = _lane_endpoints(corridor_line, side)
@@ -250,7 +329,7 @@ def build_baseline_track_raw(corridor_line: LineString, side: str = "west",
     return xs, ys, cum_time, cum_time[-1]
 
 
-def build_speed_reduction_track_raw(corridor_line: LineString, polygon, side: str = "west",
+def build_speed_reduction_track_raw(corridor_line: LineString, polygon, side: str = None,
                                      base_speed_knots: float = 12.0, reduction: float = 0.5,
                                      n_spatial: int = 500):
     """Straight track, reduced speed inside polygon, with real cumulative time (s)."""
@@ -270,7 +349,7 @@ def build_speed_reduction_track_raw(corridor_line: LineString, polygon, side: st
     return xs, ys, cum_time, cum_time[-1]
 
 
-def build_reroute_track_raw(corridor_line: LineString, polygon, side: str = "west",
+def build_reroute_track_raw(corridor_line: LineString, polygon, side: str = None,
                              base_speed_knots: float = 12.0, n_spatial: int = 500,
                              direction: str = "auto"):
     """Go-around track at constant speed, with real cumulative time (s)."""

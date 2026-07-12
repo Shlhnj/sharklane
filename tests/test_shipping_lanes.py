@@ -44,3 +44,54 @@ def test_nearest_lane_to_point():
     # a point near the Saleh Bay habitat centroid used in the worked example
     line = nearest_lane_to_point(gdf, 117.6, -7.9)
     assert line.geom_type == "LineString"
+
+
+def test_trim_lane_to_polygon_shorter_than_original():
+    from shapely.geometry import Polygon, LineString
+    from sharklane.shipping_lanes import trim_lane_to_polygon
+
+    # a very long lane (like a real global-dataset segment) crossing a
+    # small polygon in the middle
+    long_lane = LineString([(-100000, 250), (100000, 250)])
+    polygon = Polygon([(-1000, 0), (1000, 0), (1000, 500), (-1000, 500)])
+
+    trimmed, info = trim_lane_to_polygon(long_lane, polygon, pad_fraction=0.25)
+
+    assert trimmed.length < long_lane.length
+    assert info["inside_length_m"] == pytest.approx(2000, rel=0.01)
+    assert info["pad_length_m"] == pytest.approx(500, rel=0.01)  # 25% of 2000
+    assert info["total_length_m"] == pytest.approx(3000, rel=0.01)  # 2000 + 500 + 500
+
+
+def test_trim_lane_to_polygon_zero_pad_matches_inside_segment():
+    from shapely.geometry import Polygon, LineString
+    from sharklane.shipping_lanes import trim_lane_to_polygon
+
+    long_lane = LineString([(-100000, 250), (100000, 250)])
+    polygon = Polygon([(-1000, 0), (1000, 0), (1000, 500), (-1000, 500)])
+
+    trimmed, info = trim_lane_to_polygon(long_lane, polygon, pad_fraction=0.0)
+    assert trimmed.length == pytest.approx(info["inside_length_m"], rel=0.01)
+
+
+def test_trim_lane_to_polygon_larger_pad_gives_longer_lane():
+    from shapely.geometry import Polygon, LineString
+    from sharklane.shipping_lanes import trim_lane_to_polygon
+
+    long_lane = LineString([(-100000, 250), (100000, 250)])
+    polygon = Polygon([(-1000, 0), (1000, 0), (1000, 500), (-1000, 500)])
+
+    trimmed_small, _ = trim_lane_to_polygon(long_lane, polygon, pad_fraction=0.1)
+    trimmed_large, _ = trim_lane_to_polygon(long_lane, polygon, pad_fraction=0.5)
+    assert trimmed_large.length > trimmed_small.length
+
+
+def test_trim_lane_to_polygon_raises_if_no_intersection():
+    from shapely.geometry import Polygon, LineString
+    from sharklane.shipping_lanes import trim_lane_to_polygon
+
+    lane_far_away = LineString([(10000, 10000), (20000, 20000)])
+    polygon = Polygon([(-1000, 0), (1000, 0), (1000, 500), (-1000, 500)])
+
+    with pytest.raises(ValueError, match="does not intersect"):
+        trim_lane_to_polygon(lane_far_away, polygon, pad_fraction=0.25)

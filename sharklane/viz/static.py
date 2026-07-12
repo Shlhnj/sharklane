@@ -53,7 +53,10 @@ def plot_reroute_paths(reroute_df, polygon, water_mask=None, tracks=None, ax=Non
                         max_paths_labeled=1):
     """Plot the actual rerouted paths (around the risk polygon perimeter),
     entry/exit points, and optionally the vessels' original tracks for
-    comparison."""
+    comparison. Handles the case where reroute_df is empty (no transit
+    vessels found -- e.g. no vessel track actually entered/exited the risk
+    polygon in this dataset) by showing the polygon/tracks with a note,
+    rather than crashing on the missing columns an empty DataFrame has."""
     if ax is None:
         fig, ax = plt.subplots(figsize=(9, 9))
 
@@ -63,7 +66,9 @@ def plot_reroute_paths(reroute_df, polygon, water_mask=None, tracks=None, ax=Non
         ax.imshow(water_mask.mask, extent=extent, origin="upper",
                   cmap="Blues_r", alpha=0.3, zorder=0)
 
-    if tracks is not None:
+    has_vessel_id = len(reroute_df) > 0 and "vessel_id" in reroute_df.columns
+
+    if tracks is not None and has_vessel_id:
         for vid in reroute_df["vessel_id"]:
             if vid in tracks:
                 t = tracks[vid]
@@ -73,6 +78,15 @@ def plot_reroute_paths(reroute_df, polygon, water_mask=None, tracks=None, ax=Non
 
     gpd.GeoSeries([polygon]).plot(ax=ax, facecolor="none", edgecolor="crimson",
                                    linewidth=2, zorder=2, label="Risk polygon")
+
+    if not has_vessel_id:
+        ax.text(0.5, 0.5, "No rerouted vessels to show\n(no transit vessels found)",
+                transform=ax.transAxes, ha="center", va="center", fontsize=10,
+                color="gray")
+        ax.set_title("Rerouted vessel paths around the risk polygon")
+        ax.set_aspect("equal")
+        ax.legend(loc="best", fontsize=8)
+        return ax
 
     has_path_line = "path_line" in reroute_df.columns
     for i, row in reroute_df.iterrows():

@@ -62,6 +62,21 @@ def test_redirection_reroute_avoids_polygon_interior(synthetic_sim):
         assert not polygon.buffer(-10).intersects(path_line)
 
 
+def test_plot_reroute_paths_handles_empty_reroute_df():
+    # regression test: an empty reroute_df (built from an empty list, as
+    # happens when zero transit vessels are found) has NO columns at all,
+    # not just empty rows -- plot_reroute_paths must not crash trying to
+    # access reroute_df["vessel_id"] on it.
+    import pandas as pd
+    from shapely.geometry import Polygon
+    from sharklane.viz.static import plot_reroute_paths
+
+    empty_reroute_df = pd.DataFrame([])
+    polygon = Polygon([(0, 0), (100, 0), (100, 100), (0, 100)])
+    ax = plot_reroute_paths(empty_reroute_df, polygon, water_mask=None, tracks=None)
+    assert ax is not None
+
+
 def test_lane_shift_runs(synthetic_sim):
     result = synthetic_sim.simulate_lane_shift(
         speed_threshold_mps=3.0, direction=(0, 1),
