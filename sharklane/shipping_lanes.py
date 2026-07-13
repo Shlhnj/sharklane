@@ -124,13 +124,24 @@ def trim_lane_to_polygon(lane_line, polygon, pad_fraction: float = 0.25):
     """
     from shapely.geometry import LineString
 
-    inter = lane_line.intersection(polygon)
+    # IMPORTANT: measure against the polygon's CONVEX HULL, not the raw
+    # polygon. Routing elsewhere in this package (compute_reroute_options,
+    # reroute_perimeter) works around the convex hull, since the shortest
+    # path around an obstacle only ever needs to touch hull vertices. If
+    # this function instead measured the "inside" length against a
+    # concave (or holed) polygon -- which can be much smaller than its own
+    # hull -- padding by a fraction of that too-short length can still
+    # leave both trimmed endpoints INSIDE the hull, causing
+    # compute_reroute_options() to fail with "does not cross the convex
+    # hull boundary twice" even though the untrimmed lane crossed it fine.
+    hull = polygon.convex_hull
+    inter = lane_line.intersection(hull)
     if inter.is_empty:
         raise ValueError(
-            "The lane does not intersect the polygon at all -- nothing to "
-            "trim around. Check that the lane actually passes through the "
-            "habitat, or use the full untrimmed lane instead "
-            "(trim_to_polygon=False)."
+            "The lane does not intersect the polygon (or its convex hull) "
+            "at all -- nothing to trim around. Check that the lane "
+            "actually passes through the habitat, or use the full "
+            "untrimmed lane instead (trim_to_polygon=False)."
         )
 
     if inter.geom_type == "MultiLineString":

@@ -116,3 +116,38 @@ def test_trim_lane_to_polygon_raises_if_no_intersection():
 
     with pytest.raises(ValueError, match="does not intersect"):
         trim_lane_to_polygon(lane_far_away, polygon, pad_fraction=0.25)
+
+
+def test_trim_lane_to_polygon_handles_concave_holed_polygon():
+    # Regression test for a real bug: a real-world raster-derived,
+    # non-convex polygon with an interior hole (hull area ~1.7x the
+    # polygon's own area). Trimming previously measured the "inside"
+    # length against the raw (concave) polygon, which can be much
+    # narrower than its own convex hull at the crossing point -- padding
+    # by a fraction of that too-short length left both trimmed endpoints
+    # still INSIDE the hull, breaking compute_reroute_options() downstream
+    # with "does not cross the convex hull boundary twice", even though
+    # the untrimmed lane crossed it fine.
+    import os
+    from shapely.geometry import Point
+    from sharklane import Simulator
+
+    fixture_path = os.path.join(os.path.dirname(__file__), "fixtures", "zone_10_cri_zones.geojson")
+    sim = Simulator()
+    sim.load_core_habitat(fixture_path, source_crs="EPSG:4326")
+
+    assert len(sim.polygon.interiors) >= 1  # confirms this fixture has the hole we expect
+    assert sim.polygon.convex_hull.area > sim.polygon.area * 1.5  # confirms it's meaningfully non-convex
+
+    sim.load_world_shipping_lane(lane_type="auto", pad_deg=2.0,
+                                  trim_to_polygon=True, trim_pad_fraction=0.25)
+    lane = sim.corridor_line
+
+    start_inside = sim.polygon.convex_hull.contains(Point(lane.coords[0]))
+    end_inside = sim.polygon.convex_hull.contains(Point(lane.coords[-1]))
+    assert not start_inside
+    assert not end_inside
+
+    # this must succeed, not raise
+    opts = sim.list_reroute_options(side=None)
+    assert "option_1" in opts and "option_2" in opts
