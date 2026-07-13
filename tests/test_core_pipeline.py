@@ -9,6 +9,13 @@ def test_load_core_habitat(synthetic_sim):
     assert synthetic_sim.polygon.area == pytest.approx(2000 * 1500, rel=0.01)
 
 
+def test_zoom_bounds_latlon_produces_reasonable_width(synthetic_sim):
+    # a ~0.1 degree lon span near the equator should be roughly 11km
+    bounds = synthetic_sim.zoom_bounds_latlon(139.0, -8.0, 139.1, -7.9)
+    width_km = (bounds[2] - bounds[0]) / 1000
+    assert 5 < width_km < 15  # loose bound, just sanity-checking scale
+
+
 def test_load_transit_line(synthetic_sim):
     assert synthetic_sim.corridor_line is not None
     assert synthetic_sim.corridor_line.length == pytest.approx(1600, rel=0.01)
@@ -41,6 +48,19 @@ def test_speed_reduction_runs(synthetic_sim):
     assert (summary["mean_pct_increase"] >= 0).all()
     # higher speed reduction should never produce a lower mean time increase
     assert summary.sort_values("reduction")["mean_pct_increase"].is_monotonic_increasing
+
+
+def test_speed_reduction_raises_clear_error_with_no_tracks(synthetic_paths):
+    # regression test: forgetting to call load_ais() (a common mistake --
+    # see the empty-tracks case) previously produced a confusing pandas
+    # KeyError deep inside summarize(); it should instead raise a clear,
+    # actionable ValueError right at the source.
+    from sharklane import Simulator
+    sim = Simulator(working_crs="EPSG:32750")
+    sim.load_core_habitat(synthetic_paths["habitat"], source_crs="EPSG:32750")
+    assert sim.tracks == {}
+    with pytest.raises(ValueError, match="No vessel tracks"):
+        sim.simulate_speed_reduction()
 
 
 def test_redirection_classifies_vessels(synthetic_sim):

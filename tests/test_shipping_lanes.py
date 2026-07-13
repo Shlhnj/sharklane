@@ -46,6 +46,27 @@ def test_nearest_lane_to_point():
     assert line.geom_type == "LineString"
 
 
+def test_simulator_auto_lane_type_selects_valid_type():
+    import geopandas as gpd
+    from shapely.geometry import box
+    from sharklane import Simulator
+
+    habitat = box(117.420502, -8.051071, 117.798157, -7.799439)
+    gdf = gpd.GeoDataFrame(geometry=[habitat], crs="EPSG:4326")
+    import tempfile, os
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "habitat.geojson")
+        gdf.to_file(path, driver="GeoJSON")
+
+        sim = Simulator(working_crs="EPSG:32750")
+        sim.load_core_habitat(path, source_crs="EPSG:4326")
+        line = sim.load_world_shipping_lane(lane_type="auto", pad_deg=2.0, trim_to_polygon=False)
+
+        assert sim.last_lane_type_used in ("Major", "Middle", "Minor")
+        assert sim.last_lane_crosses_habitat in (True, False)
+        assert line.length > 0
+
+
 def test_trim_lane_to_polygon_shorter_than_original():
     from shapely.geometry import Polygon, LineString
     from sharklane.shipping_lanes import trim_lane_to_polygon

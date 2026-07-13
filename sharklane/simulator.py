@@ -13,7 +13,7 @@ Simulator: orchestrates the full workflow --
 from __future__ import annotations
 
 import geopandas as gpd
-from shapely.geometry import LineString
+from shapely.geometry import LineString, box
 
 from . import io as sio
 from .masking import build_water_mask, WaterMask
@@ -30,11 +30,23 @@ from .viz.ship import compute_reroute_options, get_valid_sides, get_default_side
 
 
 class Simulator:
-    def __init__(self, working_crs: str = "EPSG:32750"):
+    def __init__(self, working_crs: str = "auto"):
         """
-        working_crs : a projected CRS (metres) appropriate for your site.
-            EPSG:32750 (UTM 50S) covers the Flores Sea / Sumbawa region;
-            change this to whatever UTM zone matches your AOI.
+        working_crs : a projected CRS (metres) appropriate for your site,
+            or 'auto' (default) to automatically determine the correct
+            UTM zone once you call load_core_habitat() -- based on your
+            habitat polygon's own centroid longitude/latitude. This is
+            almost always what you want: distances, areas, speeds, and
+            transit times throughout sharklane are computed directly in
+            working_crs units, which requires a PROJECTED (metric) CRS to
+            be meaningful at all -- an unprojected CRS (plain lat/lon)
+            would silently make all of those numbers wrong, since 1 degree
+            of longitude is a different real distance depending on
+            latitude. 'auto' just removes the need to look up and hardcode
+            a UTM EPSG code yourself; pass an explicit one (e.g.
+            'EPSG:32750') if you need a specific projection, e.g. for
+            consistency across multiple Simulator instances covering the
+            same region.
         """
         self.working_crs = working_crs
         self.polygon_gdf = None
@@ -45,10 +57,68 @@ class Simulator:
         self.tracks = {}
         self.results = {}
         self.last_lane_trim_info = None
+        self.last_lane_type_used = None
+        self.last_lane_crosses_habitat = None
+        self.working_crs_auto_detected = False
+
+    def _require_resolved_crs(self):
+        """Guard for any method that needs a real working_crs -- raises a
+        clear error if 'auto' hasn't been resolved yet (i.e.
+        load_core_habitat() hasn't been called), instead of failing later
+        with an opaque pyproj CRS-parsing error."""
+        if self.working_crs == "auto":
+            raise RuntimeError(
+                "working_crs is still 'auto' -- call load_core_habitat() "
+                "first so the correct UTM zone can be determined from your "
+                "habitat's location. If you don't have a habitat polygon "
+                "yet, pass an explicit working_crs (e.g. 'EPSG:32750') to "
+                "Simulator() instead of relying on auto-detection."
+            )
+
+    # ---- Map navigation (zoom) translator ---------------------------------
+    # All plot/animate methods take `bounds=(minx, miny, maxx, maxy)` in
+    # working_crs units (metres). This translates an ordinary WGS84
+    # lon/lat box into that, so you don't have to reason about UTM meters
+    # just to zoom the view -- call it again with different lon/lat values
+    # to pan or zoom further.
+
+    def zoom_bounds_latlon(self, min_lon: float, min_lat: float,
+                            max_lon: float, max_lat: float):
+        """
+        Translate an ordinary WGS84 (lon/lat) box into working_crs bounds,
+        ready to pass as `bounds=` to any plot/animate method.
+
+        Example: sim.zoom_bounds_latlon(117.4, -8.1, 117.9, -7.7)
+        """
+        self._require_resolved_crs()
+        box_wgs84 = gpd.GeoSeries([box(min_lon, min_lat, max_lon, max_lat)], crs="EPSG:4326")
+        box_proj = box_wgs84.to_crs(self.working_crs)
+        return tuple(box_proj.total_bounds)
 
     # ---- 1. Core habitat polygon --------------------------------------
     def load_core_habitat(self, path: str, source_crs: str = None):
         gdf = sio.load_polygon(path, crs=source_crs)
+
+        if self.working_crs == "auto":
+            # Auto-detect the correct UTM zone from the habitat's own
+            # centroid, so users don't have to look up and hardcode an
+            # EPSG code themselves. Distances/areas/speeds throughout
+            # sharklane still require a PROJECTED crs to be meaningful --
+            # this just picks one automatically instead of defaulting to
+            # an unprojected CRS (which would silently break all of that
+            # math) or a hardcoded region-specific one (which would
+            # silently be WRONG for anyone outside that region).
+            gdf_wgs84 = gdf if (gdf.crs is not None and gdf.crs.is_geographic) else gdf.to_crs("EPSG:4326")
+            centroid = gdf_wgs84.union_all().centroid
+            lon, lat = centroid.x, centroid.y
+            utm_zone = int((lon + 180) / 6) + 1
+            hemisphere_base = 32600 if lat >= 0 else 32700
+            self.working_crs = f"EPSG:{hemisphere_base + utm_zone}"
+            self.working_crs_auto_detected = True
+            print(f"[Simulator] auto-detected working_crs: {self.working_crs} "
+                  f"(UTM zone {utm_zone}{'N' if lat >= 0 else 'S'}, from habitat "
+                  f"centroid at {lon:.3f}, {lat:.3f})")
+
         gdf = gdf.to_crs(self.working_crs)
         self.polygon_gdf = gdf
         self.polygon = gdf.union_all()
@@ -56,6 +126,7 @@ class Simulator:
 
     # ---- 2. Transit / corridor line ------------------------------------
     def load_transit_line(self, path: str, source_crs: str = None):
+        self._require_resolved_crs()
         gdf = sio.load_line(path, crs=source_crs)
         gdf = gdf.to_crs(self.working_crs)
         self.corridor_line = gdf.geometry.iloc[0]
@@ -71,6 +142,7 @@ class Simulator:
 
     # ---- AIS ------------------------------------------------------------
     def load_ais(self, path: str, **clean_kwargs):
+        self._require_resolved_crs()
         gdf = load_ais_csv(path)
         gdf = gdf.to_crs(self.working_crs)
         cleaned = clean_tracks(gdf, crs_metric=self.working_crs, **clean_kwargs)
@@ -80,6 +152,7 @@ class Simulator:
     # ---- 4. Water/land mask ---------------------------------------------
     def build_mask(self, land_path: str, bounds=None, resolution: float = 100.0,
                     source_crs: str = None):
+        self._require_resolved_crs()
         land = sio.load_coastline(land_path, crs=source_crs)
         land = land.to_crs(self.working_crs)
         self.land_gdf = land
@@ -129,7 +202,7 @@ class Simulator:
         return gdf.to_crs(self.working_crs)
 
     # ---- World shipping lanes (Major/Middle/Minor) -----------------------
-    def load_world_shipping_lane(self, lane_type: str = "Middle",
+    def load_world_shipping_lane(self, lane_type: str = "auto",
                                   pad_deg: float = 1.0, use_nearest: bool = True,
                                   trim_to_polygon: bool = True,
                                   trim_pad_fraction: float = 0.25):
@@ -140,11 +213,21 @@ class Simulator:
         line. Useful as a real-world-informed fallback lane when you don't
         have local AIS to derive one from directly.
 
-        If use_nearest=True (default), picks the single lane segment of
-        the given type closest to the habitat centroid. Otherwise keeps
-        the full (possibly multi-segment) clipped result and uses its
-        union as the corridor line -- only sensible if a single coherent
-        segment passes through your AOI.
+        lane_type : 'Major', 'Middle', 'Minor', or 'auto' (default). With
+            'auto', all three types are checked within pad_deg of the
+            habitat, and whichever type's nearest segment ACTUALLY CROSSES
+            the habitat polygon is used (ties broken Major > Middle >
+            Minor). If none cross, falls back to whichever is closest to
+            the habitat centroid overall -- trimming will then raise its
+            usual clear error, since there's nothing inside the polygon to
+            trim around in that case. Check sim.last_lane_type_used
+            afterward to see which type was actually picked.
+
+        If use_nearest=True (default) and lane_type is NOT 'auto', picks
+        the single lane segment of the given type closest to the habitat
+        centroid. Otherwise keeps the full (possibly multi-segment)
+        clipped result and uses its union as the corridor line -- only
+        sensible if a single coherent segment passes through your AOI.
 
         By default the found lane is TRIMMED down to a sensible length
         around the habitat (trim_to_polygon=True): global-dataset lanes
@@ -152,11 +235,8 @@ class Simulator:
         specific site. The trimmed lane keeps the portion of the lane
         actually inside the habitat polygon, extended by
         trim_pad_fraction (default 0.25, i.e. 25%) of that inside-length
-        on EACH end -- e.g. a 40 km in-polygon crossing gets a 10 km
-        approach and a 10 km departure appended, for 60 km total, rather
-        than however many hundred km the raw dataset segment happened to
-        be. Set trim_to_polygon=False to keep the full untrimmed lane
-        (the old default behaviour).
+        on EACH end. Set trim_to_polygon=False to keep the full untrimmed
+        lane (the old default behaviour).
         """
         if self.polygon is None:
             raise RuntimeError("Call load_core_habitat() first.")
@@ -164,21 +244,48 @@ class Simulator:
         habitat_wgs84 = gpd.GeoSeries([self.polygon], crs=self.working_crs).to_crs("EPSG:4326").iloc[0]
         minx, miny, maxx, maxy = habitat_wgs84.bounds
         bbox = (minx - pad_deg, miny - pad_deg, maxx + pad_deg, maxy + pad_deg)
-
-        lanes = load_world_shipping_lanes(bbox=bbox, lane_type=lane_type)
-        if len(lanes) == 0:
-            raise ValueError(f"No '{lane_type}' shipping lane found within {pad_deg} deg "
-                              "of the habitat -- try a larger pad_deg or a different lane_type.")
-
-        # reproject into the working (metric) CRS before nearest-distance
-        # calc for accuracy -- distance in degrees is not metrically meaningful
-        lanes_proj = lanes.to_crs(self.working_crs)
         centroid = gpd.GeoSeries([self.polygon], crs=self.working_crs).iloc[0].centroid
 
-        if use_nearest:
-            line = nearest_lane_to_point(lanes_proj, centroid.x, centroid.y, lane_type=lane_type)
+        if lane_type == "auto":
+            candidates = []
+            for candidate_type in ["Major", "Middle", "Minor"]:
+                lanes = load_world_shipping_lanes(bbox=bbox, lane_type=candidate_type)
+                if len(lanes) == 0:
+                    continue
+                lanes_proj = lanes.to_crs(self.working_crs)
+                candidate_line = nearest_lane_to_point(lanes_proj, centroid.x, centroid.y,
+                                                        lane_type=candidate_type)
+                candidates.append({
+                    "type": candidate_type,
+                    "line": candidate_line,
+                    "crosses": candidate_line.intersects(self.polygon),
+                    "dist": candidate_line.distance(centroid),
+                })
+
+            if not candidates:
+                raise ValueError(f"No shipping lane of any type found within {pad_deg} deg "
+                                  "of the habitat -- try a larger pad_deg.")
+
+            crossing = [c for c in candidates if c["crosses"]]
+            priority = {"Major": 0, "Middle": 1, "Minor": 2}
+            chosen = (min(crossing, key=lambda c: priority[c["type"]]) if crossing
+                      else min(candidates, key=lambda c: c["dist"]))
+
+            line = chosen["line"]
+            self.last_lane_type_used = chosen["type"]
+            self.last_lane_crosses_habitat = chosen["crosses"]
         else:
-            line = lanes_proj.geometry.union_all()
+            lanes = load_world_shipping_lanes(bbox=bbox, lane_type=lane_type)
+            if len(lanes) == 0:
+                raise ValueError(f"No '{lane_type}' shipping lane found within {pad_deg} deg "
+                                  "of the habitat -- try a larger pad_deg or lane_type='auto'.")
+            lanes_proj = lanes.to_crs(self.working_crs)
+            if use_nearest:
+                line = nearest_lane_to_point(lanes_proj, centroid.x, centroid.y, lane_type=lane_type)
+            else:
+                line = lanes_proj.geometry.union_all()
+            self.last_lane_type_used = lane_type
+            self.last_lane_crosses_habitat = line.intersects(self.polygon)
 
         if trim_to_polygon:
             try:

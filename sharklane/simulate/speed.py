@@ -51,6 +51,16 @@ def simulate_speed_reduction(tracks: dict[str, gpd.GeoDataFrame],
     if reductions is None:
         reductions = [r / 100 for r in range(10, 76)]
 
+    if not tracks:
+        raise ValueError(
+            "No vessel tracks to simulate against -- `tracks` is empty. "
+            "Call sim.load_ais(...) (or set sim.tracks directly) before "
+            "running simulate_speed_reduction(). This is a common mistake "
+            "when setting up a habitat/lane but forgetting the AIS-loading "
+            "step -- see sharklane's README for load_ais() usage, or use "
+            "synthetic tracks for a quick test."
+        )
+
     rows = []
     for vid, track in tracks.items():
         if len(track) < 2:
@@ -87,6 +97,14 @@ def summarize(results: pd.DataFrame) -> pd.DataFrame:
     """Mean/median percent increase and extra hours per vessel, by reduction
     level -- the headline numbers reported in the paper (e.g. '75% speed
     reduction -> ~5% transit time increase, 69.6 extra hours/vessel')."""
+    if len(results) == 0:
+        raise ValueError(
+            "No results to summarize -- the speed reduction simulation "
+            "produced zero usable rows. This can happen even with tracks "
+            "loaded if every vessel was skipped (e.g. fewer than 2 "
+            "positions, or zero/invalid baseline transit time). Check "
+            "sim.tracks has entries with usable position data."
+        )
     g = results.groupby("reduction").agg(
         mean_pct_increase=("pct_increase", "mean"),
         median_pct_increase=("pct_increase", "median"),
