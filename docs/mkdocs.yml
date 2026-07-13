@@ -1,0 +1,31 @@
+site_name: sharklane
+site_description: Whale shark ship-collision mitigation simulation
+repo_url: https://github.com/YOUR_USERNAME/sharklane  # update this
+docs_dir: .
+
+nav:
+  - Home: index.md
+  - Quickstart: quickstart.md
+  - Guides:
+      - Full worked workflow: guides/workflow.md
+      - Troubleshooting: guides/troubleshooting.md
+      - How the reroute algorithm works: guides/reroute_algorithm.md
+      - Running in Google Colab: guides/colab_setup.md
+  - API Reference:
+      - Simulator: api/simulator.md
+      - ais: api/ais.md
+      - masking / raster_vectorize: api/masking.md
+      - shipping_lanes: api/shipping_lanes.md
+      - simulate: api/simulate.md
+      - viz: api/viz.md
+
+theme:
+  name: readthedocs
+
+markdown_extensions:
+  - fenced_code
+  - tables
+
+# To build: pip install mkdocs mkdocs-material && cd docs && mkdocs build
+# To preview locally: cd docs && mkdocs serve
+# To publish to GitHub Pages: cd docs && mkdocs gh-deploy
